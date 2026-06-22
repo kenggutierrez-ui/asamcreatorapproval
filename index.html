@@ -1955,7 +1955,7 @@ Rules:
 - DO NOT hallucinate creators, handles, or follower counts — if evidence is weak, use cumulative_following_status "needs_manual_review"
 - Return ONLY valid JSON, no markdown, no explanation`;
 
-    const raw=await askClaudeSonnet(prompt);
+    const raw=await askClaude(prompt,"claude-haiku-4-5-20251001");
     let parsed;
     try{
       const clean=raw.replace(/```json\n?/g,"").replace(/```/g,"").trim();
