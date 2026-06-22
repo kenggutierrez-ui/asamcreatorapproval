@@ -1881,9 +1881,11 @@ async function runDiscovery(){
 
     const prompt=`You are LEUQCAR, an elite creator intelligence engine for Ant Savvy Artist Management (ASAM) — a Philippine creator/talent agency that works exclusively with MICRO and NANO creators.
 
-⚠️ STRICT FOLLOWER CAP: Maximum ${capLabel} followers. Do NOT suggest macro (>100K), mega (>1M), or any nationally famous celebrity. ASAM cannot sign or represent them.
+⚠️ STRICT FOLLOWER CAP: Maximum ${capLabel} CUMULATIVE followers across all platforms. Do NOT suggest macro (>100K cumulative), mega (>1M), or any nationally famous celebrity. ASAM cannot sign or represent them.
 
-ASAM SIZE TIER BENCHMARKS:
+CUMULATIVE FOLLOWING RULE: Follower count = sum across TikTok + Instagram + Facebook + YouTube. A creator with 30K IG + 80K TikTok = 110K cumulative → FAILS the micro brief. Only recommend creators whose TOTAL across all platforms is under ${capLabel}.
+
+ASAM SIZE TIER BENCHMARKS (cumulative following):
 ${tierLines}
 ${examplesBlock}
 CAMPAIGN BRIEF:
@@ -1901,12 +1903,24 @@ Return a JSON object with exactly this structure:
   "shortlist": [
     {
       "name": "Full Name",
-      "handle": "@handle",
+      "handle": "@primary_handle",
+      "handles": {"IG": "@handle", "TT": "@handle"},
       "platform": "IG",
       "niche": "Fashion",
       "followerRange": "8K–15K",
       "estimatedER": "5.2",
-      "reason": "One sentence why this creator fits the brief"
+      "cumulative_following": 12000,
+      "follower_breakdown_by_platform": {"IG": 8000, "TT": 4000},
+      "cumulative_following_status": "estimated",
+      "creator_type": "Influencer",
+      "tier": "Nano",
+      "celebrity_flag": "no",
+      "commercial_fit": "likely_cost_efficient",
+      "age": null,
+      "location": "Metro Manila",
+      "why_match": "One sentence why this creator fits the brief",
+      "hard_filter_pass": "yes",
+      "risk_flags": []
     }
   ],
   "not_recommended": [
@@ -1915,19 +1929,30 @@ Return a JSON object with exactly this structure:
       "handle": "@handle",
       "platform": "IG",
       "niche": "Fashion",
-      "reason": "One sentence why they don't fit"
+      "cumulative_following": 500000,
+      "celebrity_flag": "yes",
+      "hard_filter_pass": "no",
+      "reason": "One sentence why they don't fit — be specific about the failure (too many followers, celebrity, wrong niche, etc.)"
     }
   ]
 }
 
 Rules:
-- shortlist: exactly 10 creators that STRONGLY fit the brief AND are under ${capLabel} followers
-- not_recommended: exactly 5 creators that don't fit (wrong niche, wrong audience, brand risk, or TOO MANY FOLLOWERS)
+- shortlist: exactly 10 creators where hard_filter_pass = "yes" AND cumulative following is under ${capLabel}
+- not_recommended: exactly 5 creators that fail (wrong niche, wrong audience, brand risk, or CUMULATIVE followers exceed cap)
+- RANKING ORDER: (1) hard_filter_pass=yes, (2) cumulative follower fit, (3) content fit, (4) geography, (5) age fit, (6) creator type, (7) commercial fit, (8) brand safety
 - Use real or highly plausible Philippine ${type.toLowerCase()} accounts with genuine micro/nano followings
 - Handle format: @username (no spaces)
 - Platform codes: IG, TT, YT, FB
-- followerRange: human readable showing the ACTUAL range, e.g. "8K–15K" or "25K–40K" — never "1M+" or "500K+"
-- estimatedER: number string only (e.g. "5.2") — micro creators typically have higher ER (3%–12%)
+- followerRange: human readable CUMULATIVE range, e.g. "8K–15K" or "25K–40K" — never "1M+" or "500K+"
+- estimatedER: number string only (e.g. "5.2") — micro/nano creators typically have higher ER (3%–12%)
+- cumulative_following_status: "verified" (confirmed multi-platform data) / "estimated" (single platform + estimate) / "partial" (only one platform found) / "needs_manual_review" (insufficient data)
+- commercial_fit: "likely_cost_efficient" (nano/micro, indie) / "moderate_cost" (micro with brand deals) / "likely_premium" (KOL, celeb-adjacent)
+- celebrity_flag: "yes" if nationally known from TV/film/music/sports — "no" otherwise
+- hard_filter_pass: "yes" only if cumulative following is within the requested range AND creator_type matches AND not a celebrity for a micro brief
+- age: number if publicly stated, null if unknown — NEVER guess
+- risk_flags: array of specific risk strings, empty array if none
+- DO NOT hallucinate creators, handles, or follower counts — if evidence is weak, use cumulative_following_status "needs_manual_review"
 - Return ONLY valid JSON, no markdown, no explanation`;
 
     const raw=await askClaudeSonnet(prompt);
@@ -1972,8 +1997,17 @@ function renderDiscoveryResults(){
       return `<div class="disc-card${alreadyAdded?" added":""}" id="dcard_${i}">
         <div class="disc-card-info">
           <div class="disc-card-name">${esc(c.name)} <span style="font-size:10px;color:var(--txt-dim)">${esc(c.handle)}</span></div>
-          <div class="disc-card-meta">${esc(c.platform)} · ${esc(c.niche)} · ${esc(c.followerRange||"—")} · ER ${esc(c.estimatedER||"?")}%</div>
-          <div class="disc-card-reason">${esc(c.reason||"")}</div>
+          <div class="disc-card-meta">${esc(c.platform)} · ${esc(c.niche)} · ${esc(c.followerRange||"—")} followers · ER ${esc(c.estimatedER||"?")}%</div>
+          <div class="disc-card-meta" style="font-size:10px;margin-top:2px;">
+            ${c.celebrity_flag==="yes"?'<span style="color:#ff6b6b;font-weight:700;">⚠ Celebrity</span> · ':""}
+            ${c.hard_filter_pass==="no"?'<span style="color:#ff6b6b;">✗ Fails filter</span> · ':""}
+            <span style="color:${c.commercial_fit==="likely_cost_efficient"?"#4caf50":c.commercial_fit==="likely_premium"?"#ff9800":"var(--txt-dim)"}">
+              ${c.commercial_fit==="likely_cost_efficient"?"💚 Cost efficient":c.commercial_fit==="likely_premium"?"🔶 Premium":c.commercial_fit==="moderate_cost"?"🔵 Moderate cost":""}
+            </span>
+            ${c.cumulative_following_status==="partial"?' · <span style="color:#ff9800;">⚠ Partial data</span>':""}
+            ${c.cumulative_following_status==="needs_manual_review"?' · <span style="color:#ff6b6b;">⚠ Needs review</span>':""}
+          </div>
+          <div class="disc-card-reason">${esc(c.why_match||c.reason||"")}</div>
         </div>
         <button class="btn${alreadyAdded?" approve":""}" onclick="addDiscoveredToRoster(${i})" id="addBtn_${i}" ${alreadyAdded?"disabled":""}>
           ${alreadyAdded?"✓ Added":"+ Add to Roster"}
@@ -2005,14 +2039,17 @@ function addDiscoveredToRoster(idx){
     handle:c.handle,
     platforms:[c.platform||"IG"],
     niche:c.niche||"",
-    followers:parseFollowerRange(c.followerRange),
+    followers:c.cumulative_following||parseFollowerRange(c.followerRange),
     er:c.estimatedER||0,
     composite:0,
     tier:"Yellow",
     status:"Pending",
     pending:true,
     dateAudited:now,
-    discoveryReason:c.reason||"",
+    discoveryReason:c.why_match||c.reason||"",
+    celebrity_flag:c.celebrity_flag||"no",
+    commercial_fit:c.commercial_fit||"",
+    hard_filter_pass:c.hard_filter_pass||"yes",
     scores:{},
     flags:{},
     ai:{}
