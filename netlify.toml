@@ -1,8 +1,12 @@
 [build]
   publish = "."
-  functions = "netlify/functions"
+    functions = "netlify/functions"
 
-[[redirects]]
-  from = "/api/claude"
-  to = "/.netlify/functions/claude"
-  status = 200
+    [functions]
+      timeout = 26
+
+      [[redirects]]
+        from = "/api/claude"
+          to = "/.netlify/functions/claude"
+            status = 200
+            
