@@ -1450,6 +1450,17 @@ function renderScoringQueue(){
       ${esc(c.handle||c.name)}
       <span style="opacity:.6;margin-left:2px">${(c.platforms||[])[0]||""}</span>
     </div>`).join("");
+  // Add Score All Pending button if not already there
+  let scoreAllBtn=$("#scoreAllPendingBtn");
+  if(!scoreAllBtn){
+    scoreAllBtn=document.createElement("button");
+    scoreAllBtn.id="scoreAllPendingBtn";
+    scoreAllBtn.className="btn gold";
+    scoreAllBtn.style.cssText="margin-top:10px;width:100%;font-size:13px;";
+    scoreAllBtn.onclick=scoreAllPending;
+    panel.appendChild(scoreAllBtn);
+  }
+  scoreAllBtn.textContent="⚡ Score All "+pending.length+" Pending with Claude";
 }
 
 /* ===== RENDER ROSTER ===== */
@@ -1616,6 +1627,7 @@ function renderDetail(loadingAI){
       <button class="btn" id="sendReportBtn">✉ Send Intelligence Report</button>
       ${(c.status==="Audited"||(!c.pending&&c.composite))&&c.status!=="Approved"?`<button class="btn approve" id="approveBtn">✓ Approve for Campaign</button>`:""}
       ${c.status==="Approved"?`<div style="font-size:11px;color:var(--green);font-family:var(--font-mono);padding:6px 0">✓ Added to Creator Pool</div>`:""}
+      <button class="btn" id="deleteCreatorBtn" style="border-color:rgba(226,88,91,.4);color:var(--red);flex:0 0 auto;padding:11px 14px" title="Remove from roster">✕</button>
     </div>
   </div>
   ${brandMatchHtml}`;
@@ -1624,6 +1636,8 @@ function renderDetail(loadingAI){
   $("#sendReportBtn").onclick=()=>sendReport(c);
   const appBtn=$("#approveBtn");
   if(appBtn) appBtn.onclick=()=>approveForCampaign(c);
+  const delBtn=$("#deleteCreatorBtn");
+  if(delBtn) delBtn.onclick=()=>deleteCreator(c.id);
 }
 
 /* ===== SCORING CONFIG SCREEN ===== */
@@ -1998,8 +2012,71 @@ function addDiscoveredToRoster(idx){
       try{fetch(n8nUrl,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({event:"creator_added",creator:newCreator,timestamp:new Date().toISOString()})}).catch(()=>{});}catch(e){}
       toast("🎯 "+c.name+" added to Scoring Queue → n8n webhook fired");
     } else {
-      toast("🎯 "+c.name+" added to Scoring Queue");
+      toast("🎯 "+c.name+" added — auto-scoring now…");
     }
+
+  // Auto-score the newly added creator
+  scoreCreatorNow(newCreator);
+}
+
+/* ===== SCORE SINGLE CREATOR (background, no UI block) ===== */
+async function scoreCreatorNow(c){
+  const g=CONFIG.tierThresholds.green||75, y=CONFIG.tierThresholds.yellow||55;
+  const ttm=CONFIG.ttMult||1.5;
+  const sopLines=CONFIG.sizeTiers.map(t=>`${t.key} ${fmtNum(t.min)}-${t.max>=999999999?"∞":fmtNum(t.max)} (min ER ${t.er}%)`).join(", ");
+  const critList=CONFIG.criticalFlags.join(", ");
+  const prompt=`You are LEUQCAR, the AI brand-safety analyst for Ant Savvy Artist Management (ASAM), a Philippine creator/talent agency. Vet this creator for brand partnership. Respond with ONLY a valid JSON object — no markdown, no code fences.
+
+ASAM BENCHMARK SOP
+Size tiers: ${sopLines}. For TikTok-primary creators raise ER bar ${ttm}×.
+Green>=${g} AND meets ER AND zero critical flags. Yellow ${y}-${g-1} or ER slightly below or one minor flag. Red<${y} OR any critical flag.
+CRITICAL flags: ${critList}.
+If you lack reliable knowledge of this creator, set dataConfidence to "low" and state manual verification is required in the summary.
+
+CREATOR: ${c.handle} (${c.name}) | Platforms: ${(c.platforms||["IG"]).join(",")} | Niche: ${c.niche||"n/a"} | Followers: ${c.followers||"n/a"} | ER: ${c.er||"n/a"}%
+
+Return JSON: {"overallScore":<int 0-100>,"tier":"<Green|Yellow|Red>","dataConfidence":"<high|medium|low>","brandSafetySummary":"<exactly 3 sentences>","recommendation":"<1 actionable sentence>","scores":{"engagement":<int>,"content":<int>,"brandSafety":<int>,"professionalism":<int>,"audience":<int>,"reliability":<int>},"riskFlags":[{"label":"Offensive content","level":"<safe|warn|danger>"},{"label":"Political controversy","level":"<safe|warn|danger>"},{"label":"Fake engagement","level":"<safe|warn|danger>"},{"label":"NSFW history","level":"<safe|warn|danger>"},{"label":"Engagement pods","level":"<safe|warn|danger>"},{"label":"Brand collab history","level":"<safe|warn|danger>"}]}`;
+  try{
+    const raw=await askClaude(prompt);
+    const t=typeof raw==="string"?raw:JSON.stringify(raw);
+    const a=t.indexOf("{"),b=t.lastIndexOf("}");
+    const res=JSON.parse(t.slice(a,b+1));
+    c.scores=res.scores||{};
+    c.ai={summary:res.brandSafetySummary,recommendation:res.recommendation,riskFlags:Array.isArray(res.riskFlags)?res.riskFlags:[],dataConfidence:res.dataConfidence||"high"};
+    c.composite=Number.isFinite(+res.overallScore)?Math.round(+res.overallScore):composite(c.scores);
+    c.tier=["Green","Yellow","Red"].includes(res.tier)?res.tier:tierFromScore(c.composite);
+    c.pending=false;c.status="Audited";applyBenchmark(c);
+    save();renderMetrics();renderRoster();if(selectedId===c.id)renderDetail();
+    toast(`✓ ${c.name} scored — ${c.tier} (${c.composite})`);
+  }catch(e){
+    c.pending=false;
+    c.ai={summary:"Auto-scoring failed ("+(e.message||"error")+"). Run KOL Audit manually.",recommendation:"Use + Add Manually or KOL Audit to generate full intelligence report.",riskFlags:deriveFlags(c.flags||{}),dataConfidence:"low"};
+    c.composite=0;c.tier="Yellow";
+    applyBenchmark(c);save();renderMetrics();renderRoster();
+    toast("Auto-scoring failed for "+c.name+" — run manual audit.",true);
+  }
+}
+
+/* ===== SCORE ALL PENDING ===== */
+async function scoreAllPending(){
+  const pending=creators.filter(c=>c.status==="Pending"||c.pending);
+  if(!pending.length){toast("No pending creators to score.");return;}
+  toast("Scoring "+pending.length+" pending creator"+(pending.length>1?"s":"")+" with Claude…");
+  for(const c of pending){
+    await scoreCreatorNow(c);
+  }
+}
+
+/* ===== DELETE CREATOR ===== */
+function deleteCreator(id){
+  const c=creators.find(x=>x.id===id);
+  if(!c) return;
+  if(!confirm(`Remove "${c.name}" (${c.handle}) from the roster?\n\nThis cannot be undone.`)) return;
+  const idx=creators.findIndex(x=>x.id===id);
+  if(idx>=0) creators.splice(idx,1);
+  if(selectedId===id) selectedId=creators.length?creators[0].id:null;
+  save();renderMetrics();renderRoster();renderDetail();
+  toast(`Removed ${c.handle} from roster.`);
 }
 
 function parseFollowerRange(range){
@@ -2064,13 +2141,23 @@ async function runBatch(){
   })).filter(x=>x.name);
   if(!items.length){toast("Add at least one name or handle.",true);return;}
 
-  const newOnes=items.map(it=>{
+  const skipped=[];
+  const newOnes=items.reduce((acc,it)=>{
     const isHandle=it.name.startsWith("@");
-    return {id:uid(),name:isHandle?it.name.replace(/^@/,""):it.name,handle:isHandle?it.name:("@"+it.name.toLowerCase().replace(/\s+/g,"")),
+    const handle=isHandle?it.name:("@"+it.name.toLowerCase().replace(/\s+/g,""));
+    // Duplicate check — skip if handle already in roster
+    if(creators.some(x=>x.handle.toLowerCase()===handle.toLowerCase())){skipped.push(handle);return acc;}
+    const rawName=isHandle?it.name.replace(/^@/,""):it.name;
+    // Capitalize first letter of names derived from handles (e.g. "jaiasuncion" → "Jaiasuncion")
+    const displayName=isHandle?(rawName.charAt(0).toUpperCase()+rawName.slice(1)):rawName;
+    acc.push({id:uid(),name:displayName,handle,
       platforms:[it.plat],niche:"",followers:it.fol,er:it.er,scores:{},flags:{},notes:"",
       dateAudited:new Date().toISOString().slice(0,10),pending:true,ai:null,
-      profileType:it.profileType||"influencer"};
-  });
+      profileType:it.profileType||"influencer"});
+    return acc;
+  },[]);
+  if(skipped.length) toast("Skipped — already on roster: "+skipped.join(", "),true);
+  if(!newOnes.length) return;
   newOnes.forEach(c=>creators.unshift(c));
   save();
   $("#batchOverlay").classList.remove("open");
