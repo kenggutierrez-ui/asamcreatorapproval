@@ -1858,13 +1858,39 @@ async function runDiscovery(){
     const targetAud=$("#discAudience")?.value||"";
     const mustAvoid=$("#discMustAvoid")?.value||"";
 
-    const prompt=`You are LEUQCAR, an elite creator intelligence engine for Ant Savvy Artist Management (ASAM) in the Philippines.
+    // Build tier constraints from CONFIG
+    const tierLines=CONFIG.sizeTiers.map(t=>
+      `  • ${t.key}: ${fmtNum(t.min)}–${t.max>=999999999?"∞":fmtNum(t.max)} followers (min ER ${t.er}%)`
+    ).join("\n");
 
+    // Determine max follower cap based on selected tiers (default: micro cap = 100K)
+    let maxFollowerCap=100000;
+    if(followerTiers.length){
+      const selectedKeys=followerTiers.map(f=>f.toLowerCase());
+      const matched=CONFIG.sizeTiers.filter(t=>selectedKeys.some(k=>t.key.toLowerCase().includes(k)||k.includes(t.key.toLowerCase())));
+      if(matched.length) maxFollowerCap=Math.max(...matched.map(t=>t.max<999999999?t.max:1000000));
+    }
+    const capLabel=maxFollowerCap>=1000000?"1M":(maxFollowerCap>=1000?fmtNum(maxFollowerCap):"100K");
+
+    // Inject approved examples for learning calibration
+    const approvedExamples=getApprovedExamples();
+    const examplesBlock=approvedExamples.length
+      ? `\nASAM APPROVED CREATOR EXAMPLES — match this creator profile closely:\n`+
+        approvedExamples.map(e=>`  • ${e.name} (${e.handle}): ${e.niche}, ~${fmtNum(e.followers)} followers, ${e.er}% ER, ${e.tier} tier`).join("\n")+"\n"
+      : "";
+
+    const prompt=`You are LEUQCAR, an elite creator intelligence engine for Ant Savvy Artist Management (ASAM) — a Philippine creator/talent agency that works exclusively with MICRO and NANO creators.
+
+⚠️ STRICT FOLLOWER CAP: Maximum ${capLabel} followers. Do NOT suggest macro (>100K), mega (>1M), or any nationally famous celebrity. ASAM cannot sign or represent them.
+
+ASAM SIZE TIER BENCHMARKS:
+${tierLines}
+${examplesBlock}
 CAMPAIGN BRIEF:
 - Creator type: ${type}
 - Platforms: ${platforms.length?platforms.join(", "):"Any"}
 - Niche/Category: ${niches.length?niches.join(", "):"Any"}
-- Follower tier: ${followerTiers.length?followerTiers.join(", "):"Any"}
+- Follower tier requested: ${followerTiers.length?followerTiers.join(", "):"Nano/Micro (default)"}
 - Location: ${location}
 - Brand description: ${brandDesc||"Not specified"}
 - Target audience: ${targetAud||"Not specified"}
@@ -1878,8 +1904,8 @@ Return a JSON object with exactly this structure:
       "handle": "@handle",
       "platform": "IG",
       "niche": "Fashion",
-      "followerRange": "50K–200K",
-      "estimatedER": "3.2",
+      "followerRange": "8K–15K",
+      "estimatedER": "5.2",
       "reason": "One sentence why this creator fits the brief"
     }
   ],
@@ -1895,13 +1921,13 @@ Return a JSON object with exactly this structure:
 }
 
 Rules:
-- shortlist: exactly 10 creators that STRONGLY fit the brief
-- not_recommended: exactly 5 creators that are known but don't fit (wrong niche, wrong audience, brand risk, etc.)
-- Use real or highly plausible Philippine ${type.toLowerCase()} accounts
+- shortlist: exactly 10 creators that STRONGLY fit the brief AND are under ${capLabel} followers
+- not_recommended: exactly 5 creators that don't fit (wrong niche, wrong audience, brand risk, or TOO MANY FOLLOWERS)
+- Use real or highly plausible Philippine ${type.toLowerCase()} accounts with genuine micro/nano followings
 - Handle format: @username (no spaces)
 - Platform codes: IG, TT, YT, FB
-- followerRange: human readable (e.g. "50K–200K")
-- estimatedER: number string only (e.g. "3.2")
+- followerRange: human readable showing the ACTUAL range, e.g. "8K–15K" or "25K–40K" — never "1M+" or "500K+"
+- estimatedER: number string only (e.g. "5.2") — micro creators typically have higher ER (3%–12%)
 - Return ONLY valid JSON, no markdown, no explanation`;
 
     const raw=await askClaudeSonnet(prompt);
@@ -2090,6 +2116,38 @@ function parseFollowerRange(range){
   return Math.round(n);
 }
 
+/* ===== LEARNING LOOP — Approved creator examples ===== */
+const APPROVED_EXAMPLES_KEY="asam_approved_examples_v1";
+const MAX_APPROVED_EXAMPLES=20;
+
+function saveApprovedExample(c){
+  try{
+    const stored=JSON.parse(localStorage.getItem(APPROVED_EXAMPLES_KEY)||"[]");
+    // Remove duplicate if already saved
+    const filtered=stored.filter(x=>x.handle!==c.handle);
+    const example={
+      handle:c.handle,
+      name:c.name,
+      niche:c.niche||"",
+      followers:c.followers||0,
+      er:c.er||0,
+      tier:c.tier||"Green",
+      composite:c.composite||0,
+      platforms:c.platforms||["IG"],
+      approvedDate:new Date().toISOString().split("T")[0]
+    };
+    // Prepend (most recent first), cap at MAX
+    const updated=[example,...filtered].slice(0,MAX_APPROVED_EXAMPLES);
+    localStorage.setItem(APPROVED_EXAMPLES_KEY,JSON.stringify(updated));
+  }catch(e){console.warn("saveApprovedExample failed:",e);}
+}
+
+function getApprovedExamples(){
+  try{
+    return JSON.parse(localStorage.getItem(APPROVED_EXAMPLES_KEY)||"[]");
+  }catch(e){return [];}
+}
+
 /* ===== APPROVE FOR CAMPAIGN (Step 7) ===== */
 async function approveForCampaign(c){
   const btn=document.querySelector("#approveBtn");
@@ -2099,6 +2157,9 @@ async function approveForCampaign(c){
     const idx=creators.findIndex(x=>x.id===c.id);
     if(idx>=0){creators[idx].status="Approved";creators[idx].approvedDate=new Date().toISOString().split("T")[0];}
     save();
+
+    // Save to learning loop — future Discovery prompts will use these as calibration examples
+    saveApprovedExample(c);
 
     // Attempt SharePoint push via M365 MCP if available
     let sharePointPushed=false;
