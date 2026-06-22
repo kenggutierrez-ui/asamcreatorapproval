@@ -1371,7 +1371,7 @@ async function askClaude(prompt,model="claude-haiku-4-5"){
   const data=await resp.json();
   return data?.content?.[0]?.text||"";
 }
-async function askClaudeSonnet(prompt){return askClaude(prompt,"claude-sonnet-4-20250514");}
+async function askClaudeSonnet(prompt){return askClaude(prompt,"claude-sonnet-4-5");}
 
 /* API Key Modal */
 function openApiKeyModal(){
